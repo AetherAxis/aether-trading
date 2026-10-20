@@ -15,7 +15,7 @@
 
 ## 设计要点
 
-- **Lean NuGet 化三坑**（均已修，详见 MIGRATION）：Engine 的 nuspec 不声明 Queues/Messaging 依赖，MEF 组合需显式补引（否则 `Unable to locate any exports: QuantConnect.Queues.JobQueue`）；LeanData 走 `externals/Lean/Data` 向上查找约定（工作区根已建最小子集）；live-mode 需在 `Initializer.Start()` 前显式 `Globals.Reset()`
+- **Lean NuGet 化三坑**（均已修，详见 MIGRATION）：Engine 的 nuspec 不声明 Queues/Messaging 依赖，MEF 组合需显式补引（否则 `Unable to locate any exports: QuantConnect.Queues.JobQueue`）；LeanData 定位：向上找 `externals/Lean/Data` → fallback `<exe>/LeanData`（AetherAxis 形态走后者——⑧ console csproj 把本仓 `LeanData/` 随构建拷进输出）；live-mode 需在 `Initializer.Start()` 前显式 `Globals.Reset()`
 - **CtpBrokerage 双角色**：同一类既是 data-queue-handler（tick 流自 Ctp.Net.ICtpSession 会话进 Lean）又是 live-mode-brokerage（下单/撤单/成交回报）
 - **策略源运行时 Roslyn 编译**：`labs/leanalgorithms/*.cs` 动态加载——命名空间改名属运行时失败而非编译期失败
 - **契约正典**：客户端会话接口（ICtpSession）在 ctp-net-contracts 仓（namespace `Ctp.Net`），本仓不持本地副本
