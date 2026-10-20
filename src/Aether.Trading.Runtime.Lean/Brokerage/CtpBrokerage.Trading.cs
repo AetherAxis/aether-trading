@@ -214,8 +214,9 @@ public partial class CtpBrokerage
             });
         }
 
-        // 持仓缓存增量维护（offset 决策数据源）
-        _positionCache.ApplyTrade(trade);
+        // 持仓缓存增量维护（offset 决策数据源）——方向/开平取本腿报单请求（⑤ 成交推送的方向/开平槽为
+        // 捕获 verbatim 恒 BuyOpen——用它维护缓存会令 Long 单调膨胀/Short 恒零 ⇒ 开平映射错判 ⇒ 仓位失控）
+        _positionCache.ApplyTrade(trade, child.Request.Direction, child.Request.OffsetFlag);
     }
 
     /// <summary>报单回报 → 生命周期事件。非终态仅记录（Submitted 已在 PlaceOrder 发过）；终态走聚合判断。</summary>

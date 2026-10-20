@@ -105,8 +105,11 @@ public sealed class CtpPositionCache
         }
     }
 
-    /// <summary>Trade 回报增量维护。Open 加对应方向今仓；Close* 减对侧（CloseToday→今、CloseYesterday→昨、Close→先今后昨）。</summary>
-    public void ApplyTrade(CtpTrade trade)
+    /// <summary>Trade 回报增量维护（<paramref name="direction"/>/<paramref name="offsetFlag"/> 显式传入——
+    /// ⑤ 成交推送的方向/开平槽为捕获 verbatim（恒 BuyOpen），直接消费会令 Long 单调膨胀、Short 恒零 ⇒
+    /// 开平映射持续错判 ⇒ 仓位失控（2026-10-20 双 bot 实测根因）。调用方传本腿报单请求的真实方向/开平。
+    /// Open 加对应方向今仓；Close* 减对侧（CloseToday→今、CloseYesterday→昨、Close→先今后昨）。</summary>
+    public void ApplyTrade(CtpTrade trade, CtpDirection direction, CtpOffsetFlag offsetFlag)
     {
         lock (_lock)
         {
@@ -114,19 +117,19 @@ public sealed class CtpPositionCache
             var (ex, lt, lTo, lYd, st, sTo, sYd) = (s.ExchangeId, s.LongTotal, s.LongToday, s.LongYd, s.ShortTotal, s.ShortToday, s.ShortYd);
             var vol = trade.Volume;
 
-            if (trade.OffsetFlag == CtpOffsetFlag.Open)
+            if (offsetFlag == CtpOffsetFlag.Open)
             {
-                if (trade.Direction == CtpDirection.Buy) { lt += vol; lTo += vol; }
+                if (direction == CtpDirection.Buy) { lt += vol; lTo += vol; }
                 else { st += vol; sTo += vol; }
             }
             else
             {
                 // 平多=卖、平空=买；Close 减仓先扣今再扣昨（非 SHFE 交易所自动分配，本地近似）
-                if (trade.Direction == CtpDirection.Sell)   // 平多
+                if (direction == CtpDirection.Sell)   // 平多
                 {
                     lt -= vol;
-                    if (trade.OffsetFlag == CtpOffsetFlag.CloseYesterday) lYd = Math.Max(0, lYd - vol);
-                    else if (trade.OffsetFlag == CtpOffsetFlag.CloseToday) lTo = Math.Max(0, lTo - vol);
+                    if (offsetFlag == CtpOffsetFlag.CloseYesterday) lYd = Math.Max(0, lYd - vol);
+                    else if (offsetFlag == CtpOffsetFlag.CloseToday) lTo = Math.Max(0, lTo - vol);
                     else
                     {
                         var fromToday = Math.Min(lTo, vol);
@@ -137,8 +140,8 @@ public sealed class CtpPositionCache
                 else                                            // 平空
                 {
                     st -= vol;
-                    if (trade.OffsetFlag == CtpOffsetFlag.CloseYesterday) sYd = Math.Max(0, sYd - vol);
-                    else if (trade.OffsetFlag == CtpOffsetFlag.CloseToday) sTo = Math.Max(0, sTo - vol);
+                    if (offsetFlag == CtpOffsetFlag.CloseYesterday) sYd = Math.Max(0, sYd - vol);
+                    else if (offsetFlag == CtpOffsetFlag.CloseToday) sTo = Math.Max(0, sTo - vol);
                     else
                     {
                         var fromToday = Math.Min(sTo, vol);
