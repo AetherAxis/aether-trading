@@ -111,11 +111,31 @@ public partial class CtpBrokerage : Brokerage, IDataQueueHandler
     // —— 交易方法（PlaceOrder/UpdateOrder/CancelOrder/GetOpenOrders/GetAccountHoldings）实现在 CtpBrokerage.Trading.cs ——
     // —— 报单/成交回报处理（OnOrderReceived/OnTradeReceived）同在 Trading partial ——
 
+    /// <summary>阻塞等待带超时——防半死会话把 sync 契约调用挂死（2026-10-20 实验室实测：重连窗口内
+    /// QueryPositionAsync 永不返回，无超时的 GetResult() 无限阻塞 ⇒ 交易/引擎线程冻结、市场假死而引擎
+    /// 仍显示 Running）。超时抛 TimeoutException；任务自身故障抛原始异常（不裹 Aggregate）。</summary>
+    private static T BlockingCall<T>(Func<Task<T>> call, TimeSpan timeout, string what)
+    {
+        var task = Task.Run(call);
+        if (!task.Wait(timeout))
+            throw new TimeoutException($"{what} {timeout.TotalSeconds:0}s 未返回（会话半死？重连窗口内调用挂起）");
+        return task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>非泛型版（见泛型重载注释）。</summary>
+    private static void BlockingCall(Func<Task> call, TimeSpan timeout, string what)
+    {
+        var task = Task.Run(call);
+        if (!task.Wait(timeout))
+            throw new TimeoutException($"{what} {timeout.TotalSeconds:0}s 未返回（会话半死？重连窗口内调用挂起）");
+        task.GetAwaiter().GetResult();
+    }
+
     public override List<CashAmount> GetCashBalance()
     {
         try
         {
-            var acc = Task.Run(() => _session.QueryAccountAsync()).GetAwaiter().GetResult();
+            var acc = BlockingCall(() => _session.QueryAccountAsync(), TimeSpan.FromSeconds(8), "资金查询");
             // P1: CNY 金额按 USD 标签上报（见 AccountBaseCurrency 注释），避免换汇路径缺失
             return new List<CashAmount> { new((decimal)acc.Balance, "USD") };
         }
@@ -136,7 +156,7 @@ public partial class CtpBrokerage : Brokerage, IDataQueueHandler
         var connect = CtpLeanGateway.MarketDataConnect
             ?? throw new InvalidOperationException("行情前置连接参数未注入（CtpLeanGateway.MarketDataConnect 为空）");
         var instruments = CtpLeanGateway.Instruments;
-        Task.Run(() => _session.SubscribeMarketDataAsync(connect, instruments)).GetAwaiter().GetResult();
+        BlockingCall(() => _session.SubscribeMarketDataAsync(connect, instruments), TimeSpan.FromSeconds(15), "行情订阅");
         _ctpMdSubscribed = true;
         CtpLeanGateway.Log($"[Brokerage] 已订阅 CTP 行情: {string.Join(",", instruments)}");
     }

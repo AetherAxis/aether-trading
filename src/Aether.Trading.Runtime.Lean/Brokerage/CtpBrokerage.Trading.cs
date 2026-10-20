@@ -76,8 +76,10 @@ public partial class CtpBrokerage
             {
                 try
                 {
-                    // 阻塞模式同 GetCashBalance（PlaceOrder 是 sync 契约）；SDK 立即返回，回报走事件
-                    var r = Task.Run(() => _session.OrderInsertAsync(req)).GetAwaiter().GetResult();
+                    // 阻塞模式同 GetCashBalance（PlaceOrder 是 sync 契约）；SDK 立即返回，回报走事件。
+                    // 8s 护栏：重连窗口内会话半死时 OrderInsertAsync 可能永不返回——无护栏会挂死
+                    // transaction-handler 线程、冻结全部订单处理（2026-10-20 实验室实测）
+                    var r = BlockingCall(() => _session.OrderInsertAsync(req), TimeSpan.FromSeconds(8), $"报单 {req.InstrumentId}");
                     refs.Add(r.OrderRef);
                     sentRequests.Add(req);
                     CtpLeanGateway.Log($"[Brokerage] 已报单: {req.InstrumentId} {req.Direction}{req.OffsetFlag} {req.Volume}手 @{req.LimitPrice} ref={r.OrderRef}");
@@ -164,7 +166,7 @@ public partial class CtpBrokerage
     {
         try
         {
-            var positions = Task.Run(() => _session.QueryPositionAsync()).GetAwaiter().GetResult();
+            var positions = BlockingCall(() => _session.QueryPositionAsync(), TimeSpan.FromSeconds(8), "持仓查询(回填)");
             _positionCache.Replace(positions);   // 一查两用：回填 Lean + 刷 offset 决策用的持仓缓存
             var (holdings, skipped) = CtpAccountMappers.ToHoldings(positions, LookupAlgorithmSymbol, PriceFallback);
             foreach (var id in skipped)
@@ -305,7 +307,8 @@ public partial class CtpBrokerage
     {
         try
         {
-            var positions = Task.Run(() => _session.QueryPositionAsync()).GetAwaiter().GetResult();
+            // 5s 护栏（重连窗口挂起实测——本调用在 PlaceOrder 热路径上，挂起即冻结全部订单处理）
+            var positions = BlockingCall(() => _session.QueryPositionAsync(), TimeSpan.FromSeconds(5), "持仓查询");
             _positionCache.Replace(positions);
         }
         catch (Exception ex)
