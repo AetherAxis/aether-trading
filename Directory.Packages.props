@@ -1,0 +1,16 @@
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.13.0" />
+    <PackageVersion Include="YamlDotNet" Version="16.2.0" />
+    <PackageVersion Include="QuantConnect.Lean.Engine" Version="2.5.18193" />
+    <!-- Engine 的 nuspec 依赖不声明 Queues/Messaging（源码引用时代由宿主显式带上）——
+         NuGet 化后必须显式引用，否则输出目录缺 dll，MEF Composer 找不到 JobQueue/Messaging 导出。 -->
+    <PackageVersion Include="QuantConnect.Queues" Version="2.5.18193" />
+    <PackageVersion Include="QuantConnect.Messaging" Version="2.5.18193" />
+  </ItemGroup>
+</Project>

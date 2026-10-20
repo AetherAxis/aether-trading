@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Aether.Trading.Runtime.Lean</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 本上下文 -->
+    <ProjectReference Include="..\Aether.Trading.Runtime.Domain\Aether.Trading.Runtime.Domain.csproj" />
+    <ProjectReference Include="..\Aether.Trading.Domain\Aether.Trading.Domain.csproj" />
+
+    <!-- 外部业务契约（Runtime.Lean → Quotes + Ctp，方向与架构文档一致）。
+         Ctp 客户端契约正典在 ctp-net-contracts（Ctp.Net 命名空间，含 ICtpSession 会话端口）——
+         本仓不再持有 Ctp.Net 契约的本地副本（2026-10-20 C2：与 ctp-net-client 的 SDK 实现共用同一接口）。 -->
+    <ProjectReference Include="..\Aether.Quotes.Domain\Aether.Quotes.Domain.csproj" />
+    <ProjectReference Include="..\..\..\ctp-net-contracts\src\Ctp.Net.Contracts\Ctp.Net.Contracts.csproj" />
+
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- LEAN NuGet 引用（进程内跑回测/实盘引擎，2.5.18193）。QuantConnect.* 类型只在本叶子内可见。
+         Engine 传递引用 Algorithm/Brokerages/Configuration/Logging/Common 等子包，但 nuspec 不声明
+         Queues/Messaging——显式补引（缺 Queues.dll 会使 MEF 组合失败：Unable to locate any exports
+         matching: QuantConnect.Queues.JobQueue）。镜像 AlphaAgent Infrastructure.Backtest + Infrastructure.CtpLean 的引用集。 -->
+    <PackageReference Include="QuantConnect.Lean.Engine" />
+    <PackageReference Include="QuantConnect.Queues" />
+    <PackageReference Include="QuantConnect.Messaging" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <!-- Roslyn 动态编译用户 Lean 算法源码（LeanAlgorithmScriptCompiler）。版本与 Trading.Scripting / Harness.Scripting 对齐。 -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
+  </ItemGroup>
+
+</Project>

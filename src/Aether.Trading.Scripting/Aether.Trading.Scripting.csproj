@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Aether.Trading.Runtime.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Aether.Trading.Domain\Aether.Trading.Domain.csproj" />
+    <ProjectReference Include="..\Aether.Trading.Runtime.Domain\Aether.Trading.Runtime.Domain.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <!-- YAML 策略配方解析（仅此脚本层引 YamlDotNet；Trading.Domain 保持纯净不引）。 -->
+    <PackageReference Include="YamlDotNet" />
+  </ItemGroup>
+
+</Project>

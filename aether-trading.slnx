@@ -1,0 +1,8 @@
+<Solution>
+  <Project Path="src/Aether.Quotes.Domain/Aether.Quotes.Domain.csproj" />
+  <Project Path="src/Aether.Trading.Domain/Aether.Trading.Domain.csproj" />
+  <Project Path="src/Aether.Trading.Runtime.Domain/Aether.Trading.Runtime.Domain.csproj" />
+  <Project Path="src/Aether.Trading.Application/Aether.Trading.Application.csproj" />
+  <Project Path="src/Aether.Trading.Scripting/Aether.Trading.Scripting.csproj" />
+  <Project Path="src/Aether.Trading.Runtime.Lean/Aether.Trading.Runtime.Lean.csproj" />
+</Solution>

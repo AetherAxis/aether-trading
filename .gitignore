@@ -1,0 +1,13 @@
+bin/
+obj/
+*.user
+.vs/
+.vscode/
+*.suo
+*.cache
+*.nupkg
+.idea/
+*.sln.docstates
+
+# macOS
+.DS_Store
