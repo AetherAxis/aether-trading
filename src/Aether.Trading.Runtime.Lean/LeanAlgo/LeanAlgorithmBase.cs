@@ -1,6 +1,7 @@
 using QuantConnect;
 using QuantConnect.Algorithm;
 using QuantConnect.Data;
+using QuantConnect.Statistics;
 
 namespace Aether.Trading.Runtime.Lean;
 
@@ -22,6 +23,15 @@ namespace Aether.Trading.Runtime.Lean;
 /// </remarks>
 public abstract class LeanAlgorithmBase : QCAlgorithm
 {
+    /// <summary>
+    /// 以线程安全的 <see cref="LockedTradeBuilder"/> 替换默认 TradeBuilder——Lean 2.5.18193 的
+    /// SetMarketPrice（算法线程）与 ProcessFill（成交线程）无锁并发，高频成交下 NRE 引擎即死
+    /// （2026-10-21 实测 85 秒即死，堆栈钉死 TradeBuilder.SetMarketPrice）。基类构造器统一替换，
+    /// 策略无感。分组/撮合参数与 QCAlgorithm 默认一致（FillToFill + FIFO）。
+    /// </summary>
+    protected LeanAlgorithmBase()
+        => SetTradeBuilder(new LockedTradeBuilder(FillGroupingMethod.FillToFill, FillMatchingMethod.FIFO));
+
     /// <summary>
     /// 订阅本地 CtpBar 数据（回测读预取 CSV / 实盘读 CTP tick 聚合）。等价
     /// <c>AddData&lt;CtpBar&gt;(ticker, resolution, TimeZones.Utc)</c>。
