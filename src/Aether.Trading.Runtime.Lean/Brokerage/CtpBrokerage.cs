@@ -29,6 +29,13 @@ public partial class CtpBrokerage : Brokerage, IDataQueueHandler
     private bool _eventsWired;
     private bool _ctpMdSubscribed;
 
+    /// <summary>
+    /// 会话最新连接状态（<see cref="OnConnectionStateChanged"/> 维护）。前置每 F0 推送序号 240 条会
+    /// <b>主动断开换会话</b>（SDK 自动重连）——重连窗口内报单必然失败，而 LEAN 把 Brokerage Error
+    /// 视为致命错误直接停引擎。报单前查本字段决定是否等重连（2026-10-21 双 bot 实测 5 分钟即死）。
+    /// </summary>
+    private volatile CtpConnectionStatus _status = CtpConnectionStatus.Connected;
+
     public CtpBrokerage(IAlgorithm? algorithm, ICtpSession session) : base("CtpFutures")
     {
         _algorithm = algorithm;
@@ -97,6 +104,7 @@ public partial class CtpBrokerage : Brokerage, IDataQueueHandler
 
     private void OnConnectionStateChanged(object? sender, CtpConnectionStatus e)
     {
+        _status = e;
         var msg = e switch
         {
             CtpConnectionStatus.Disconnected => BrokerageMessageType.Warning,
@@ -110,6 +118,26 @@ public partial class CtpBrokerage : Brokerage, IDataQueueHandler
 
     // —— 交易方法（PlaceOrder/UpdateOrder/CancelOrder/GetOpenOrders/GetAccountHoldings）实现在 CtpBrokerage.Trading.cs ——
     // —— 报单/成交回报处理（OnOrderReceived/OnTradeReceived）同在 Trading partial ——
+
+    /// <summary>
+    /// 重连窗口等待（仅盘中断线 <see cref="CtpConnectionStatus.Reconnecting"/> 才等）：前置按 F0 序号上限
+    /// 主动换会话，SDK 自动重连 + 重登录通常 1-3s 完成。等不到返 false（调用方按失败处理，但<b>不得</b>
+    /// 发 Brokerage Error——那会让 LEAN 停引擎）。闭市 <see cref="CtpConnectionStatus.Closed"/> /
+    /// <see cref="CtpConnectionStatus.Disconnected"/> 立即返 false，不白等。
+    /// </summary>
+    private bool WaitForReconnect(TimeSpan timeout)
+    {
+        if (_status == CtpConnectionStatus.Connected) return true;
+        if (_status is CtpConnectionStatus.Closed or CtpConnectionStatus.Disconnected) return false;
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (_status == CtpConnectionStatus.Connected) return true;
+            if (_status is CtpConnectionStatus.Closed or CtpConnectionStatus.Disconnected) return false;
+            Thread.Sleep(100);
+        }
+        return _status == CtpConnectionStatus.Connected;
+    }
 
     /// <summary>阻塞等待带超时——防半死会话把 sync 契约调用挂死（2026-10-20 实验室实测：重连窗口内
     /// QueryPositionAsync 永不返回，无超时的 GetResult() 无限阻塞 ⇒ 交易/引擎线程冻结、市场假死而引擎

@@ -41,6 +41,10 @@ public partial class CtpBrokerage
         try
         {
             RefreshPositionCacheIfStale();
+            // 前置换会话窗口（F0 序号 240 主动断开 → SDK 自动重连）：先等重连完成再报，避免必然失败。
+            // 等不到也不放弃本单——下面的失败分支只发 Warning（LEAN 视 Brokerage Error 为致命，2026-10-21 实测停引擎）。
+            if (!WaitForReconnect(TimeSpan.FromSeconds(5)))
+                CtpLeanGateway.Log($"[Brokerage] 报单前连接未就绪（{_status}）——按下单失败处理，引擎继续运行");
             // Lean Symbol.Create 会把 ticker 大写化（AG2610），CTP 接口区分大小写（ag2610）——
             // 报单/查行情/查持仓都须用 CTP 原始 instrumentId（同 _symbolByInstrument 的坑）。
             var instrumentId = ResolveCtpInstrument(order.Symbol.Value);
@@ -92,7 +96,10 @@ public partial class CtpBrokerage
 
             if (refs.Count == 0)
             {
-                OnMessage(new BrokerageMessageEvent(BrokerageMessageType.Error, "OrderInsert", "全部报单失败（详见日志）"));
+                // 不得用 BrokerageMessageType.Error：LEAN 会把它升级为 RuntimeError 直接停引擎
+                // （2026-10-21 双 bot 实测——前置换会话的几秒窗口内所有报单失败即团灭）。
+                // 本单以 false 返回（LEAN 标记 Invalid），策略在下一个 tick/事件自然重报。
+                OnMessage(new BrokerageMessageEvent(BrokerageMessageType.Warning, "OrderInsert", "报单失败（连接重连窗口，详见日志）"));
                 return false;
             }
             if (refs.Count < result.Requests.Count)
