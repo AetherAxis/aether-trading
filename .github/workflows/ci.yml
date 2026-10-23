@@ -42,7 +42,32 @@ jobs:
         run: dotnet build aether-trading.slnx -c Release
         working-directory: aether-trading
 
-      # 2026-10-23 迁入测试：99 例 = 指标 / 条件编译 / YAML 策略派发 / Roslyn 编译缓存 / Brokerage 映射与回报翻译（FakeCtpSession 零真实 CTP）。
-      - name: Test
-        run: dotnet test aether-trading.slnx -c Release --no-build
+      # 依赖审计：任何**新出现**的已知漏洞都会让这一步失败。
+      # 允许清单只放「上游已停止维护、没有修复版本」的传递依赖，每条写明来历与为何可接受。
+      # 当前唯一在册项：DotNetZip 1.16.0（GHSA-xhg6-9j5j-w4vf）——1.16.0 即最后一版，
+      # 由 QuantConnect.Compression 传递引入（本仓代码不直接调用）；升级 Lean 或上游换库后应删掉此项。
+      - name: NuGet audit
+        run: |
+          dotnet package list --vulnerable --include-transitive > /tmp/audit.txt
+          cat /tmp/audit.txt
+          grep -E '^[[:space:]]+> ' /tmp/audit.txt \
+            | grep -vi 'GHSA-xhg6-9j5j-w4vf' > /tmp/audit-bad.txt || true
+          if [ -s /tmp/audit-bad.txt ]; then
+            echo "::error::发现未在允许清单中的已知漏洞依赖："
+            cat /tmp/audit-bad.txt
+            exit 1
+          fi
         working-directory: aether-trading
+
+      # 2026-10-23 迁入测试：99 例 = 指标 / 条件编译 / YAML 策略派发 / Roslyn 编译缓存 / Brokerage 映射与回报翻译（FakeCtpSession 零真实 CTP）。
+      # 覆盖率只采集不上门槛（先有趋势再谈门槛，避免把「补测试」变成「改阈值」）。
+      - name: Test
+        run: dotnet test aether-trading.slnx -c Release --no-build --collect:"XPlat Code Coverage"
+        working-directory: aether-trading
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-aether-trading
+          path: aether-trading/tests/**/TestResults/**/coverage.cobertura.xml
+          if-no-files-found: warn

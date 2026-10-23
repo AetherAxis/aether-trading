@@ -23,7 +23,7 @@
 ## 构建与测试
 
 ```bash
-dotnet test aether-trading.slnx    # tests/Aether.Trading.Tests：99 例（指标/条件编译/YAML 策略派发/Roslyn 编译缓存/Brokerage 映射与回报翻译——FakeCtpSession 零真实 CTP）
+dotnet test aether-trading.slnx    # tests/Aether.Trading.Tests：100 例（指标/条件编译/YAML 策略派发/Roslyn 编译缓存/Brokerage 映射与回报翻译——FakeCtpSession 零真实 CTP）
 ```
 
 原 monorepo 的 Domain/Runtime 两个测试项目在此合并为单测试项目（拆分按依赖重量、独立仓无此必要）。

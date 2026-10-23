@@ -1,22 +1,36 @@
 <Project>
   <PropertyGroup>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <!-- 传递依赖钉版本：Lean 2.5.18193 的 nuspec 带进四个 2018 年的旧包，其中系统级包有已公开漏洞
+         （见下方 ItemGroup）。中央传递钉能让 PackageVersion 覆盖传递链解析出的版本。 -->
+    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
   </PropertyGroup>
   <ItemGroup>
-    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" />
-    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.0" />
-    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
-    <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.13.0" />
-    <PackageVersion Include="YamlDotNet" Version="16.2.0" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="5.9.0" />
+    <PackageVersion Include="YamlDotNet" Version="18.1.0" />
     <PackageVersion Include="QuantConnect.Lean.Engine" Version="2.5.18193" />
     <!-- Engine 的 nuspec 依赖不声明 Queues/Messaging（源码引用时代由宿主显式带上）——
          NuGet 化后必须显式引用，否则输出目录缺 dll，MEF Composer 找不到 JobQueue/Messaging 导出。 -->
     <PackageVersion Include="QuantConnect.Queues" Version="2.5.18193" />
     <PackageVersion Include="QuantConnect.Messaging" Version="2.5.18193" />
+    <!-- QuantConnect.Lean.Engine 2.5.18193 的传递依赖（本仓代码不用，仅需「不携带已知漏洞」）：
+         GHSA-6xh7-4v2w-36q6 / GHSA-jc8g-xhw5-6x46 / GHSA-p9wx-v264-q34p / GHSA-rxg9-xrhp-64gj。
+         钉在同主版本末位（4.10.3 / 4.7.2 / 4.7.3）而不是跳 8.x/10.x——运行时装配按简单名解析，
+         同线升级只换实现不换契约，避免给 Lean 的旧代码路径引入行为变更。 -->
+    <PackageVersion Include="System.Private.ServiceModel" Version="4.10.3" />
+    <PackageVersion Include="System.ServiceModel.Primitives" Version="4.10.3" />
+    <PackageVersion Include="System.Net.Http.WinHttpHandler" Version="4.7.2" />
+    <PackageVersion Include="System.Drawing.Common" Version="4.7.3" />
+    <!-- 上一条 4.10.3 的 WCF 又带进 Pkcs 6.0.1（GHSA-555c-2p6r-68mm）——同线钉到 6.0.5。 -->
+    <PackageVersion Include="System.Security.Cryptography.Pkcs" Version="6.0.5" />
+
     <!-- 测试 -->
-    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.11.0" />
     <PackageVersion Include="xunit" Version="2.9.3" />
-    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.4" />
-    <PackageVersion Include="coverlet.collector" Version="6.0.4" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="4.0.1" />
+    <PackageVersion Include="coverlet.collector" Version="10.1.0" />
   </ItemGroup>
 </Project>

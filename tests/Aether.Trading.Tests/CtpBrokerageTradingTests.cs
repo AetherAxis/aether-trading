@@ -54,6 +54,22 @@ public class CtpBrokerageTradingTests : IDisposable
     };
 
     [Fact]
+    public void Disconnected_session_logs_not_ready_but_still_submits_the_order()
+    {
+        // 前置每 F0 推送序号 240 条会主动换会话（SDK 自动重连），重连窗口内报单必然失败；
+        // 契约是「只记日志 + 不发 Brokerage Error」（LEAN 视 Error 为致命会停引擎），且本单照常提交
+        // 让交易所侧的拒单回报成为唯一一次失败（不吞单）。断线/闭市立即判不就绪——不白等 5s 超时。
+        CtpLeanGateway.TradingOptions = new CtpLiveTradingOptions { EnableRealOrders = true, MaxOrderVolume = 10 };
+        _session.RaiseConnectionState(CtpConnectionStatus.Disconnected);
+
+        var ok = _brokerage.PlaceOrder(NewOrder(2m));
+
+        Assert.True(ok, string.Join("\n", _logs));
+        Assert.Contains(_logs, l => l.Contains("报单前连接未就绪（Disconnected）"));
+        Assert.Single(_session.InsertCalls);
+    }
+
+    [Fact]
     public void Toggle_off_keeps_P1_behavior()
     {
         CtpLeanGateway.TradingOptions = CtpLiveTradingOptions.Default;   // EnableRealOrders=false
@@ -237,7 +253,7 @@ public class CtpBrokerageTradingTests : IDisposable
         _session.RaiseOrder(OrderReport(_session.OrderRefs[1], (byte)'0', volumeTraded: 1));
 
         Assert.Equal(OrderStatus.Filled, _events[^1].Status);
-        Assert.Single(_events.Where(e => e.Status == OrderStatus.Filled));   // 终态只发一次
+        Assert.Single(_events, e => e.Status == OrderStatus.Filled);   // 终态只发一次
     }
 
     [Fact]
@@ -266,7 +282,7 @@ public class CtpBrokerageTradingTests : IDisposable
         // 终态 = Canceled（部分成交后撤），无 Filled、无按限价补齐的幻影腿
         Assert.Equal(OrderStatus.PartiallyFilled, _events[0].Status);
         Assert.Equal(OrderStatus.Canceled, _events[^1].Status);
-        Assert.Empty(_events.Where(e => e.Status == OrderStatus.Filled));
+        Assert.DoesNotContain(_events, e => e.Status == OrderStatus.Filled);
         Assert.Equal(1, _events.Sum(e => Math.Abs(e.FillQuantity)));   // 真实成交恰 1 手（撤腿不计）
     }
 
@@ -330,6 +346,7 @@ public class CtpBrokerageTradingTests : IDisposable
         public void RaiseOrder(CtpOrder order) => OrderReceived?.Invoke(this, order);
         public void RaiseTrade(CtpTrade trade) => TradeReceived?.Invoke(this, trade);
         public void RaiseTick(CtpTick tick) => TickReceived?.Invoke(this, tick);
+        public void RaiseConnectionState(CtpConnectionStatus status) => ConnectionStateChanged?.Invoke(this, status);
 
         public Task<CtpLoginResult> LoginAsync(CtpLoginRequest request, CancellationToken ct = default)
             => Task.FromResult(LoginResult!);
