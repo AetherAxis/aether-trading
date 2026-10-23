@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 同仓四项目；contracts（Ctp.Net 协议类型）跨仓直达——Runtime.Lean 本就引它，CI 已按拓扑 checkout -->
+    <ProjectReference Include="..\..\src\Aether.Trading.Domain\Aether.Trading.Domain.csproj" />
+    <ProjectReference Include="..\..\src\Aether.Trading.Application\Aether.Trading.Application.csproj" />
+    <ProjectReference Include="..\..\src\Aether.Trading.Scripting\Aether.Trading.Scripting.csproj" />
+    <ProjectReference Include="..\..\src\Aether.Trading.Runtime.Lean\Aether.Trading.Runtime.Lean.csproj" />
+    <ProjectReference Include="..\..\..\ctp-net-contracts\src\Ctp.Net.Contracts\Ctp.Net.Contracts.csproj" />
+  </ItemGroup>
+
+</Project>

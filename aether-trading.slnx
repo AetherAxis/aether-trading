@@ -5,4 +5,5 @@
   <Project Path="src/Aether.Trading.Application/Aether.Trading.Application.csproj" />
   <Project Path="src/Aether.Trading.Scripting/Aether.Trading.Scripting.csproj" />
   <Project Path="src/Aether.Trading.Runtime.Lean/Aether.Trading.Runtime.Lean.csproj" />
+  <Project Path="tests/Aether.Trading.Tests/Aether.Trading.Tests.csproj" />
 </Solution>

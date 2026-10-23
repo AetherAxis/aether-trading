@@ -20,6 +20,15 @@
 - **策略源运行时 Roslyn 编译**：`labs/leanalgorithms/*.cs` 动态加载——命名空间改名属运行时失败而非编译期失败
 - **契约正典**：客户端会话接口（ICtpSession）在 ctp-net-contracts 仓（namespace `Ctp.Net`），本仓不持本地副本
 
+## 构建与测试
+
+```bash
+dotnet test aether-trading.slnx    # tests/Aether.Trading.Tests：99 例（指标/条件编译/YAML 策略派发/Roslyn 编译缓存/Brokerage 映射与回报翻译——FakeCtpSession 零真实 CTP）
+```
+
+原 monorepo 的 Domain/Runtime 两个测试项目在此合并为单测试项目（拆分按依赖重量、独立仓无此必要）。
+交易所 bot 策略源（market-maker/noise-taker）的编译锁定在 aether-apps/tests（策略源存档在彼仓根 algorithms/）。
+
 ## 来历
 
 2026-10-20 拆自 Aether monorepo（初名 `Acme.Trading.*`，同日命名统一 `Aether.Trading.*`；Lean 从 monorepo 源码引用改为 NuGet 包）。完整决策记录见工作区根 `MIGRATION.md`。

@@ -41,3 +41,8 @@ jobs:
       - name: Build
         run: dotnet build aether-trading.slnx -c Release
         working-directory: aether-trading
+
+      # 2026-10-23 迁入测试：99 例 = 指标 / 条件编译 / YAML 策略派发 / Roslyn 编译缓存 / Brokerage 映射与回报翻译（FakeCtpSession 零真实 CTP）。
+      - name: Test
+        run: dotnet test aether-trading.slnx -c Release --no-build
+        working-directory: aether-trading
