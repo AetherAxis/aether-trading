@@ -146,8 +146,10 @@ public partial class CtpBrokerage
                 CtpLeanGateway.Log($"[Brokerage] 撤单跳过 ref={child.OrderRef}: 尚未收到报单回报（无交易所代码），请稍后在期货页手动撤单");
                 continue;
             }
+            // InstrumentId 必带：DCE 等交易所按「合约 + 报单引用」索引委托，缺它真前置回 25「找不到相应报单」
+            // （2026-10-24 SimNow 实测；本地交易所不校验，所以本地跑通 ≠ 真前置能撤）
             var orderRef = new CtpOrderRef(_session.BrokerId ?? "", _session.UserId ?? "",
-                child.FrontId, child.SessionId, child.OrderRef, child.ExchangeId);
+                child.FrontId, child.SessionId, child.OrderRef, child.ExchangeId, child.Request.InstrumentId);
             // fire-and-forget：OrderActionAsync 最长阻塞 15s，阻塞 transaction-handler 线程会卡住全部订单处理；
             // Canceled 事件由 '5' 回报驱动（Lean 契约：true=请求已发）
             Task.Run(async () =>
