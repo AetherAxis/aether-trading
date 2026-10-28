@@ -4,7 +4,7 @@
 
 ## 1. 定位与边界
 
-进程内跑 LEAN 回测/实盘，并把 CTP 会话桥成 Lean 的 brokerage + 行情源。不在本仓：CTP SDK/契约（`ctp-net-*`）、行情采集、宿主（`aether-apps`/`aether-desktop`）。
+进程内跑 LEAN 回测/实盘，并把 CTP 会话桥成 Lean 的 brokerage + 行情源。不在本仓：CTP SDK/契约（`ctp-net-*`）、行情采集、宿主（`aether-ctp-hosts`/`aether-desktop`）。
 
 ## 2. 项目组成
 

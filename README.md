@@ -27,7 +27,7 @@ dotnet test aether-trading.slnx    # tests/Aether.Trading.Tests：100 例（指�
 ```
 
 原 monorepo 的 Domain/Runtime 两个测试项目在此合并为单测试项目（拆分按依赖重量、独立仓无此必要）。
-交易所 bot 策略源（market-maker/noise-taker）的编译锁定在 aether-apps/tests（策略源存档在彼仓根 algorithms/）。
+交易所 bot 策略源（market-maker/noise-taker）的编译锁定在 aether-ctp-hosts/tests（策略源存档在彼仓根 algorithms/）。
 
 ## 来历
 
