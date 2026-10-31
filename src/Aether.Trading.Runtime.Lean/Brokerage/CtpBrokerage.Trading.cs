@@ -37,6 +37,12 @@ public partial class CtpBrokerage
     private readonly CtpPositionCache _positionCache = new();
     private System.Threading.Timer? _watchdog;
     private System.Threading.Timer? _reconciler;
+    /// <summary>起点清场（open-issues #29）已跑过的轮数：连接后最多清几轮就收手，避免把「另一个进程刚下的单」反复清。</summary>
+    private int _orphanSweeps;
+    /// <summary>回填持仓用的兜底价缓存（每合约只等一次第一笔行情）。</summary>
+    private readonly Dictionary<string, decimal> _fallbackPrice = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>起点清场的轮数上限（交易所查询一次最多回 200 行，#28——大堆孤儿要清几轮）。</summary>
+    private const int OrphanSweepMaxPasses = 10;
 
     public override bool PlaceOrder(Order order)
     {
@@ -71,7 +77,9 @@ public partial class CtpBrokerage
             var postOnly = order.Tag?.Contains("post-only", StringComparison.OrdinalIgnoreCase) ?? false;
             var result = CtpOrderRequestMapper.Map(new CtpOrderRequestMapper.MapInput(
                 order.Direction, order.Type, orderPrice, order.Quantity, instrumentId,
-                snapshot, tick, _session.BrokerId ?? "", _session.UserId ?? "", opts.MaxOrderVolume, postOnly));
+                snapshot, tick, _session.BrokerId ?? "", _session.UserId ?? "", opts.MaxOrderVolume, postOnly,
+                RestingCloseVolume: RestingCloseVolume(instrumentId,
+                    order.Direction == OrderDirection.Buy ? CtpDirection.Buy : CtpDirection.Sell)));
             if (result.Error != null)
             {
                 CtpLeanGateway.Log($"[Brokerage] 拒单: {result.Error}（{order.Symbol.Value} {order.Quantity} {order.Type}）");
@@ -132,6 +140,27 @@ public partial class CtpBrokerage
             OnMessage(new BrokerageMessageEvent(BrokerageMessageType.Error, "PlaceOrder", ex.Message));
             return false;
         }
+    }
+
+    /// <summary>
+    /// 本账户在该合约、该方向上**当前还挂在簿上**的平仓手数——交易所就是按这个数预留可平量的
+    /// （<c>SimTradingCore.ReservedCloseVolume</c> 把该方向所有在挂平仓单的 Remaining 全部计走）。
+    /// 做市商在净空 N 手时每档买腿都映射成 Close，第一张就把 N 手里的 1 手占住，后面的腿全部撞
+    /// <c>[90006] 无可平持仓</c>——腿表越拒越多（实测 38 条在挂、目标只要 3 档）。映射器收到这个数
+    /// 就能改成「先扣已占的可平量，扣完就改开仓腿」，不再硬撞交易所的预留规则。
+    /// </summary>
+    private int RestingCloseVolume(string instrumentId, CtpDirection direction)
+    {
+        var sum = 0;
+        foreach (var (child, _) in _tracker.LiveChildren(TimeSpan.Zero))
+        {
+            var req = child.Request;
+            if (req.OffsetFlag == CtpOffsetFlag.Open) continue;
+            if (req.Direction != direction) continue;
+            if (!string.Equals(req.InstrumentId, instrumentId, StringComparison.OrdinalIgnoreCase)) continue;
+            sum += Math.Max(0, req.Volume - child.VolumeTraded);
+        }
+        return sum;
     }
 
     public override bool UpdateOrder(Order order)
@@ -354,7 +383,9 @@ public partial class CtpBrokerage
     {
         if (!_session.IsConnected) return;
         var live = _tracker.LiveChildren(ReconcileGrace);
-        if (live.Count == 0)
+        // 起点清场（#29）也要查报单，所以「本进程没有活腿」不再是提前返回的理由
+        var sweep = _orphanSweeps < OrphanSweepMaxPasses;
+        if (live.Count == 0 && !sweep)
         {
             RefreshPositionCache();
             return;
@@ -374,6 +405,13 @@ public partial class CtpBrokerage
 
         var byRef = new Dictionary<string, CtpOrder>(StringComparer.Ordinal);
         foreach (var o in orders) byRef[o.OrderRef] = o;
+
+        // 反向对账（#29）：交易所还有、本进程不认识的活单 ⇒ 撤掉。
+        // 不清会怎样（2026-10-31 实测）：交易所按「同向平仓挂单的剩余量」预留可平量
+        // （SimTradingCore.ReservedCloseVolume），上一次运行留下的孤儿平仓单把这个账户的可平量占满
+        // ⇒ 之后每张平仓单都被 90006「无可平持仓」拒（单账户累计 743 次）⇒ 做市商的减仓侧一张也挂不上、
+        // 簿上只剩一侧。孤儿单还白占保证金与簿位。
+        if (sweep) SweepOrphanOrders(orders);
 
         var canceled = 0;
         foreach (var (child, tracked) in live)
@@ -404,6 +442,49 @@ public partial class CtpBrokerage
             CtpLeanGateway.Log($"[Brokerage] 对账完成：{canceled} 条腿被判定失效（交易所实际委托 {orders.Count} 条）");
         // 顺带刷新持仓：作废的委托对应的冻结额度已释放，offset/仓位决策要用新的
         RefreshPositionCache();
+    }
+
+    /// <summary>
+    /// 起点清场（open-issues #29）：把交易所簿上**本进程不跟踪**的活单撤掉。
+    /// <para>
+    /// 为什么必须做：交易所按「同向平仓挂单的剩余量」预留可平量（<c>SimTradingCore.ReservedCloseVolume</c>），
+    /// 上一次运行（崩溃 / 被 kill / 直接关窗口）留下的孤儿平仓单会把可平量占满 ⇒ 新进程的平仓单一律被
+    /// 90006「无可平持仓」拒（2026-10-31 实测：单账户累计 743 次，做市商的减仓侧一张都挂不上，簿上只剩一侧）。
+    /// 孤儿单还白占保证金和簿位。
+    /// </para>
+    /// 三条边界：
+    /// <list type="number">
+    /// <item>只清**本进程订阅的合约**（<see cref="_symbolByInstrument"/>）——别的合约上的单可能是人在期货页下的，不碰。</item>
+    /// <item>只清**本进程不跟踪**的（<see cref="CtpOrderTracker.TryGetByOrderRef"/>）——自己刚报的腿一根都不动。</item>
+    /// <item>轮数上限 <see cref="OrphanSweepMaxPasses"/>：交易所一次查询最多回 200 行（#28），大堆孤儿要清几轮；
+    /// 但同一账户若被两个进程同时用（已知限制），不能无限互撤。</item>
+    /// </list>
+    /// 撤单 fire-and-forget（<c>OrderActionAsync</c> 最长阻塞 15s，卡住对账定时器就看不见活单状态了）。
+    /// </summary>
+    private void SweepOrphanOrders(IReadOnlyList<CtpOrder> orders)
+    {
+        _orphanSweeps++;
+        var swept = 0;
+        foreach (var o in orders)
+        {
+            if (o.OrderStatusRaw is not ((byte)'1' or (byte)'3')) continue;        // 只清活单
+            if (!_symbolByInstrument.ContainsKey(o.InstrumentId)) continue;         // 只清本策略摸的合约
+            if (_tracker.TryGetByOrderRef(o.OrderRef, out _, out _)) continue;      // 自己的腿不碰
+            var orderRef = new CtpOrderRef(_session.BrokerId ?? "", _session.UserId ?? "",
+                o.FrontId, o.SessionId, o.OrderRef, o.ExchangeId, o.InstrumentId);
+            Task.Run(async () =>
+            {
+                try { await _session.OrderActionAsync(orderRef); }
+                catch (Exception ex) { CtpLeanGateway.Log($"[Brokerage] 清场撤单失败 ref={o.OrderRef}: {ex.Message}"); }
+            });
+            swept++;
+            if (swept <= 10)   // 明细只打前 10 条，其余给总数
+                CtpLeanGateway.Log($"[Brokerage] 清场：撤孤儿单 {o.InstrumentId} {o.Direction}{o.OffsetFlag} " +
+                                   $"{o.VolumeTotalOriginal - o.VolumeTraded}/{o.VolumeTotalOriginal}手 @{o.LimitPrice} ref={o.OrderRef}");
+        }
+        CtpLeanGateway.Log(swept > 0
+            ? $"[Brokerage] 清场第 {_orphanSweeps} 轮：撤 {swept} 条上一次运行留下的活单（委托表 {orders.Count} 条）"
+            : $"[Brokerage] 清场完成：交易所侧没有本进程不认识的活单（委托表 {orders.Count} 条）");
     }
 
     /// <summary>持仓缓存节流刷新（CTP 查询流控）。失败容忍——沿用旧快照。</summary>
@@ -472,13 +553,45 @@ public partial class CtpBrokerage
         return leanTicker;
     }
 
-    /// <summary>近似均价（CtpPosition 无均价字段——只影响 Lean 内部盈亏显示）：LastPrice → PreSettlement → 0。</summary>
+    /// <summary>
+    /// 近似均价（CtpPosition 没有均价字段——LastPrice → PreSettlement；拿不到就**等**第一笔行情）。
+    /// <para>
+    /// <b>为什么不能返回 0（2026-10-31 定案）</b>：Lean 用均价算持仓浮盈亏。均价 0 的空头 = 一笔巨额浮盈/浮亏
+    /// （实测 probe1 空 12 手 @0、市价 118 ⇒ 假亏 12×118×乘数），买入力当场被算穿 ⇒ 策略的**每一张新单**
+    /// 都被 Lean 自己判「Insufficient buying power」拦在报单之前（日志里只有 <c>Order Error ... Initial Margin: -118.15</c>，
+    /// 交易所根本收不到）。表现就是「只有一侧能报价」——正是「市场没有对手盘」的来源之一。
+    /// </para>
+    /// 交易所侧的持仓成本/保证金字段在 CTP 线上还是抓包常量（#5），所以只能拿行情兜：启动时通常还没有 tick，
+    /// 这里把行情订阅提前，最多等 3s 拿第一笔（拿不到按 0 继续——不阻塞启动，但要留日志）。
+    /// </summary>
     private decimal PriceFallback(string instrumentId)
     {
-        var tick = _session.GetLatestTick(instrumentId);
-        if (tick == null) return 0m;
-        if (tick.LastPrice > 0) return (decimal)tick.LastPrice;
-        if (tick.PreSettlement > 0) return (decimal)tick.PreSettlement;
+        lock (_fallbackPrice)
+        {
+            if (_fallbackPrice.TryGetValue(instrumentId, out var cached)) return cached;
+        }
+        var price = FirstTickOrWait(instrumentId);
+        lock (_fallbackPrice) _fallbackPrice[instrumentId] = price;
+        if (price <= 0)
+            CtpLeanGateway.Log($"[Brokerage] 回填持仓拿不到 {instrumentId} 的行情价——均价按 0（Lean 的买入力会被浮盈亏算歪，下一单可能被自带风控拦下）");
+        return price;
+    }
+
+    /// <summary>启动时的一笔价：tick 缓存 → （订阅后）最多等 3s 等第一笔推送。</summary>
+    private decimal FirstTickOrWait(string instrumentId)
+    {
+        for (var i = 0; i < 30; i++)
+        {
+            var tick = _session.GetLatestTick(instrumentId);
+            if (tick is { LastPrice: > 0 }) return (decimal)tick.LastPrice;
+            if (tick is { PreSettlement: > 0 }) return (decimal)tick.PreSettlement;
+            if (i == 0)
+            {
+                try { EnsureCtpMdSubscribed(); }
+                catch (Exception ex) { CtpLeanGateway.Log($"[Brokerage] 回填持仓前订阅行情失败（均价按 0）: {ex.Message}"); break; }
+            }
+            Thread.Sleep(100);
+        }
         return 0m;
     }
 }

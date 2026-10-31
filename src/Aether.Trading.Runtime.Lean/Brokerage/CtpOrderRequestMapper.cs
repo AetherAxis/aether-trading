@@ -45,7 +45,8 @@ public static class CtpOrderRequestMapper
         string InvestorId,
         int MaxOrderVolume,
         bool PostOnly = false,      // Tag "post-only" ⇒ TC='4'（BTC 对标 2026-10-05，仅限价单）
-        double PriceTick = 0.01);   // 市价转对手价限价的跨越余量（见 Map 内注释）
+        double PriceTick = 0.01,    // 市价转对手价限价的跨越余量（见 Map 内注释）
+        int RestingCloseVolume = 0); // 本账户该合约该方向**已挂在簿上**的平仓手数（交易所预留的可平量，见 Map 内注释）
 
     public sealed record MapResult(IReadOnlyList<CtpOrderRequest> Requests, string? Error);
 
@@ -123,13 +124,23 @@ public static class CtpOrderRequestMapper
         // Lean 策略以净仓位思考（持多 3 卖 5 = 净空 2）——映射到 CTP 须拆「平 3 + 开 2」两腿。
         // 旧版直接拒反转单：做市策略被动吃单攒出净仓后，反向报价腿全被拒 ⇒ 簿单边化、市场退化。
         var net = Math.Abs(pos.Net);
-        var reversalOpen = vol > net ? vol - net : 0;
+
+        // —— 可平量扣减（2026-10-31，做市商「平仓腿全被拒」的根因）——
+        // 交易所对**在挂平仓腿是预留可平量的**（SimTradingCore.ReservedCloseVolume 把该方向所有在挂
+        // 平仓单的 Remaining 全部计走）。做市商在净空 N 手时，每档买腿都映射成 BuyClose，第一档就
+        // 占了 N 手里的 1 手，剩下的腿全部撞 `[90006] 无可平持仓`（实测 2.5 分钟 13 次，腿表涨到 38 条）。
+        // 正解就一条：可平量 = |净仓| − 已在挂的平仓手数；扣到 0 就把这条腿**改开仓**。
+        // 经济含义不变（净空下买入就是减敞口，开仓腿同样在减净头寸），但交易所不会预留、不会拒单；
+        // 真做市商也是这么干的：两侧挂开仓腿报双边，净仓靠减仓腿慢慢收。
+        var closable = Math.Max(0, net - Math.Max(0, input.RestingCloseVolume));
+        var closeWanted = Math.Min(vol, closable);
+        var reversalOpen = vol - closeWanted;
         if (reversalOpen > 0 && input.MaxOrderVolume > 0 && reversalOpen > input.MaxOrderVolume)
             reversalOpen = input.MaxOrderVolume;   // 开腿受保险丝封顶（平仓腿绝不封顶）；封顶后 actual<requested 有日志
 
         // 平多用 Long 侧记录，平空用 Short 侧
         var (yd, today) = pos.Net > 0 ? (pos.LongYd, pos.LongToday) : (pos.ShortYd, pos.ShortToday);
-        var closeVolume = reversalOpen > 0 ? net : vol;   // 反转平腿 = 全部净仓；纯平仓 = vol
+        var closeVolume = closeWanted;   // 不再按 |净仓| 报满：先扣掉已挂在簿上的平仓腿（见上）
 
         if (IsShfeFamily(pos.ExchangeId))
         {
@@ -150,8 +161,11 @@ public static class CtpOrderRequestMapper
         }
 
         // 非 SHFE 系（DCE/CZCE/CFFEX/GFEX/SIM）：直接 Close（交易所自动分配今昨）+ 反转开腿
-        var requests = new List<CtpOrderRequest>(2) { BuildRequest(input, direction, CtpOffsetFlag.Close, price, closeVolume, timeCondition) };
+        var requests = new List<CtpOrderRequest>(2);
+        if (closeVolume > 0) requests.Add(BuildRequest(input, direction, CtpOffsetFlag.Close, price, closeVolume, timeCondition));
         if (reversalOpen > 0) requests.Add(BuildRequest(input, direction, CtpOffsetFlag.Open, price, reversalOpen, timeCondition));
+        if (requests.Count == 0)
+            return new MapResult(Array.Empty<CtpOrderRequest>(), "平仓量计算为 0，拒单");
         return new MapResult(requests, null);
     }
 

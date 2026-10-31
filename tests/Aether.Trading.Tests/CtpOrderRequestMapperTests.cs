@@ -321,4 +321,48 @@ public class CtpOrderRequestMapperTests
 
         Assert.NotNull(r.Error);
     }
+
+    // —— 可平量扣减（2026-10-31：做市商平仓腿被交易所预留量撞死的那条）——
+
+    [Fact]
+    public void Close_leg_subtracts_already_resting_close_volume()
+    {
+        // 净空 5 手，已有 3 手平仓腿在簿 ⇒ 本次买 1 手仍能平（可平量 2 手 > 1）
+        var r = CtpOrderRequestMapper.Map(Input(+1m, pos: Pos(shortT: 5), maxVolume: 10)
+            with { RestingCloseVolume = 3 });
+
+        Assert.Null(r.Error);
+        var req = Assert.Single(r.Requests);
+        Assert.Equal(CtpOffsetFlag.Close, req.OffsetFlag);
+        Assert.Equal(1, req.Volume);
+    }
+
+    [Fact]
+    public void Close_leg_becomes_open_when_closable_is_exhausted()
+    {
+        // 净空 5 手，5 手平仓腿已经在簿（可平量被预留光）⇒ 再报平仓必撞 [90006]
+        // ⇒ 改开仓腿（经济上同样是减净空敞口，交易所不预留、不拒单）
+        var r = CtpOrderRequestMapper.Map(Input(+1m, pos: Pos(shortT: 5), maxVolume: 10)
+            with { RestingCloseVolume = 5 });
+
+        Assert.Null(r.Error);
+        var req = Assert.Single(r.Requests);
+        Assert.Equal(CtpOffsetFlag.Open, req.OffsetFlag);
+        Assert.Equal(1, req.Volume);
+    }
+
+    [Fact]
+    public void Oversized_close_leg_splits_into_close_plus_open()
+    {
+        // 净空 5 手、在挂平仓 2 手 ⇒ 买 5 手：平 3 手（可平量）+ 开 2 手
+        var r = CtpOrderRequestMapper.Map(Input(+5m, pos: Pos(shortT: 5), maxVolume: 10)
+            with { RestingCloseVolume = 2 });
+
+        Assert.Null(r.Error);
+        Assert.Equal(2, r.Requests.Count);
+        Assert.Equal(CtpOffsetFlag.Close, r.Requests[0].OffsetFlag);
+        Assert.Equal(3, r.Requests[0].Volume);
+        Assert.Equal(CtpOffsetFlag.Open, r.Requests[1].OffsetFlag);
+        Assert.Equal(2, r.Requests[1].Volume);
+    }
 }

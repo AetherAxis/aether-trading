@@ -68,6 +68,7 @@ public partial class CtpBrokerage : Brokerage, IDataQueueHandler
         WireSessionEvents();
         // 持仓缓存不在此预热——BrokerageSetupHandler 启动时必调 GetAccountHoldings（先于任何 PlaceOrder），
         // 其中 QueryPositionAsync + Replace 即完成预热；PlaceOrder 侧另有 stale>2s 节流兜底。
+        _orphanSweeps = 0;   // open-issues #29：新一轮连接重新给「起点清场」配额（对账里撤孤儿单）
         StartReconciler();   // open-issues #25：周期跟交易所对账（委托被作废要能自愈，见 CtpBrokerage.Trading.cs）
         CtpLeanGateway.Log("[Brokerage] CTP 会话已连接，实盘引擎就绪");
         // 数据管线版本标记（排障用）：确认日志里有这行 = 跑的是修复后的二进制（三层自举死锁修复都在内）。

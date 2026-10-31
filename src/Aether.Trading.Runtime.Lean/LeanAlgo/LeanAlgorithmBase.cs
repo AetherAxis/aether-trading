@@ -1,6 +1,7 @@
 using QuantConnect;
 using QuantConnect.Algorithm;
 using QuantConnect.Data;
+using QuantConnect.Securities;
 using QuantConnect.Statistics;
 
 namespace Aether.Trading.Runtime.Lean;
@@ -45,7 +46,17 @@ public abstract class LeanAlgorithmBase : QCAlgorithm
     /// </para>
     /// </summary>
     public Symbol AddCtpData(string ticker, Resolution resolution = Resolution.Daily)
-        => AddData<CtpBar>(ticker, resolution, TimeZones.Utc).Symbol;
+    {
+        var symbol = AddData<CtpBar>(ticker, resolution, TimeZones.Utc).Symbol;
+        // 买入力检查交给交易所（2026-10-31 定案）：Lean 的期货保证金模型给**每张挂单**各锁一份保证金，
+        // 而交易所对平仓单冻结 0、持仓保证金也早已从可用资金里扣过——两边算法不一致，Lean 先把账户算成
+        // 「Free Margin 0」，再用本地风控把策略的每一张新单毙在报单之前（日志只有
+        // `Order Error: Insufficient buying power ... Free Margin: 0`，交易所根本没收到）。
+        // 实测后果：做市商只剩一侧能报价（probe1 空 7 手、11 张买腿在挂 ⇒ 卖腿一张也报不出去）——
+        // 「市场没有对手盘」的一半来源。真前置按保证金/可平量拒单且拒得准，这层重复计算只会帮倒忙。
+        Securities[symbol].SetBuyingPowerModel(new NullBuyingPowerModel());
+        return symbol;
+    }
 
     /// <summary>
     /// 直通实盘日志（同步、即时可见）：绕过 Lean 结果处理器的异步 Debug 队列（延迟数秒且可能被吞），
