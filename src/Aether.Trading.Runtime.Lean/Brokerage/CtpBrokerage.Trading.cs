@@ -22,9 +22,21 @@ public partial class CtpBrokerage
     /// <summary>下单后迟迟未收到首次报单回报 → 判无效（前置拒单不可见的兜底）。</summary>
     private static readonly TimeSpan WatchdogTimeout = TimeSpan.FromSeconds(10);
 
+    /// <summary>
+    /// 与交易所对账的周期（open-issues #25）。2026-10-30 事故：交易所 17:46 重启把在挂委托全部作废，
+    /// 直连 bot 的会话重连了却**没人告诉它委托没了**——MM 的档位图一直显示「在挂 多12/空13」，
+    /// 73 分钟零报单、零成交，直到人工重启 bot。查报单是唯一能看见「交易所侧还有没有这张单」的通道，
+    /// 而它只在查询时才看得见 ⇒ 必须周期查，不能只靠连接状态事件（经前前置时上游重启对客户端完全静默）。
+    /// </summary>
+    private static readonly TimeSpan ReconcileInterval = TimeSpan.FromSeconds(20);
+    /// <summary>对账宽限：刚报出去的单可能还没落进交易所的查询结果，别把新单当幽灵。
+    /// 非 readonly 是为了让单测把它压到 0（否则要真等 3s 才能驱动对账）。</summary>
+    internal static TimeSpan ReconcileGrace = TimeSpan.FromSeconds(3);
+
     private readonly CtpOrderTracker _tracker = new();
     private readonly CtpPositionCache _positionCache = new();
     private System.Threading.Timer? _watchdog;
+    private System.Threading.Timer? _reconciler;
 
     public override bool PlaceOrder(Order order)
     {
@@ -303,6 +315,95 @@ public partial class CtpBrokerage
             if (_tracker.TryMarkCanceled(tracked))
                 OnOrderEvent(new OrderEvent(order, DateTime.UtcNow, OrderFee.Zero, context) { Status = OrderStatus.Canceled });
         }
+    }
+
+    /// <summary>启动对账定时器（Connect 调；Disconnect 停）。</summary>
+    private void StartReconciler()
+    {
+        if (_reconciler != null) return;
+        _reconciler = new System.Threading.Timer(_ => ReconcileQuietly(), null, ReconcileInterval, ReconcileInterval);
+    }
+
+    private void StopReconciler()
+    {
+        _reconciler?.Dispose();
+        _reconciler = null;
+    }
+
+    private void ReconcileQuietly()
+    {
+        try { ReconcileWithExchange(); }
+        catch (Exception ex) { CtpLeanGateway.Log($"[Brokerage] 对账异常（忽略，下轮再试）: {ex.Message}"); }
+    }
+
+    /// <summary>
+    /// 与交易所对账（open-issues #25）：把自己认为「还挂着」的腿跟交易所实际委托表比对，
+    /// 交易所那边没了的腿 ⇒ 补发终态 Canceled，让策略在下一个 tick 重报。
+    /// <para>
+    /// 三条纪律：
+    /// <list type="number">
+    /// <item>**查询失败绝不推断**：查报单超时/报错只记日志并整轮跳过——把「查不到」当成「交易所没单」
+    /// 会误撤真在挂的腿，那比不撤更危险（真单还在簿上，策略却以为没了 ⇒ 重复挂单）。</item>
+    /// <item>**状态以交易所为准**：能查到但状态已是终态（'0'/'2'/'4'/'5'）的腿，说明终态回报丢了，
+    /// 用查询结果补一次 <c>MarkReport</c>（成交缺口由 <see cref="HandleAggregateTerminal"/> 既有逻辑兜）。</item>
+    /// <item>**宽限 3s**：刚报出去的单可能还没进查询结果。</item>
+    /// </list>
+    /// </para>
+    /// </summary>
+    internal void ReconcileWithExchange()
+    {
+        if (!_session.IsConnected) return;
+        var live = _tracker.LiveChildren(ReconcileGrace);
+        if (live.Count == 0)
+        {
+            RefreshPositionCache();
+            return;
+        }
+
+        IReadOnlyList<CtpOrder> orders;
+        try
+        {
+            orders = BlockingCall(() => _session.QueryOrderAsync(null, CancellationToken.None),
+                TimeSpan.FromSeconds(8), "对账查报单");
+        }
+        catch (Exception ex)
+        {
+            CtpLeanGateway.Log($"[Brokerage] 对账跳过：查报单失败（{ex.Message}）——不据此撤腿");
+            return;
+        }
+
+        var byRef = new Dictionary<string, CtpOrder>(StringComparer.Ordinal);
+        foreach (var o in orders) byRef[o.OrderRef] = o;
+
+        var canceled = 0;
+        foreach (var (child, tracked) in live)
+        {
+            if (byRef.TryGetValue(child.OrderRef, out var exchangeOrder))
+            {
+                var raw = exchangeOrder.OrderStatusRaw;
+                if (raw is (byte)'1' or (byte)'3') continue;   // 还在挂，正常
+                _tracker.MarkReport(child.OrderRef, raw);
+                CtpLeanGateway.Log($"[Brokerage] 对账：交易所侧状态={raw}（{(char)raw}），补发终态 " +
+                                   $"{child.Request.InstrumentId} {child.Request.Direction}{child.Request.OffsetFlag} " +
+                                   $"{child.Request.Volume}手 ref={child.OrderRef}（终态回报丢失）");
+                canceled++;
+                HandleAggregateTerminal(tracked, $"对账：交易所侧状态 {(char)raw}");
+            }
+            else
+            {
+                if (!_tracker.TryMarkReconciledCanceled(child.OrderRef)) continue;
+                CtpLeanGateway.Log($"[Brokerage] 对账：交易所已无此委托，按撤单处理 " +
+                                   $"{child.Request.InstrumentId} {child.Request.Direction}{child.Request.OffsetFlag} " +
+                                   $"{child.Request.Volume}手 ref={child.OrderRef}（柜台重启作废/报单未落地），策略应重报");
+                canceled++;
+                HandleAggregateTerminal(tracked, "对账：交易所已无此委托");
+            }
+        }
+
+        if (canceled > 0)
+            CtpLeanGateway.Log($"[Brokerage] 对账完成：{canceled} 条腿被判定失效（交易所实际委托 {orders.Count} 条）");
+        // 顺带刷新持仓：作废的委托对应的冻结额度已释放，offset/仓位决策要用新的
+        RefreshPositionCache();
     }
 
     /// <summary>持仓缓存节流刷新（CTP 查询流控）。失败容忍——沿用旧快照。</summary>

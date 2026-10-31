@@ -14,6 +14,7 @@ namespace Aether.Trading.Tests;
 public class CtpBrokerageTradingTests : IDisposable
 {
     private readonly CtpLiveTradingOptions _savedOptions = CtpLeanGateway.TradingOptions;
+    private readonly TimeSpan _savedGrace = CtpBrokerage.ReconcileGrace;
     private readonly FakeCtpSession _session = new();
     private readonly CtpBrokerage _brokerage;
     private readonly List<OrderEvent> _events = new();
@@ -22,6 +23,7 @@ public class CtpBrokerageTradingTests : IDisposable
     public CtpBrokerageTradingTests()
     {
         CtpLeanGateway.LogSink = m => _logs.Add(m);
+        CtpBrokerage.ReconcileGrace = TimeSpan.Zero;   // 单测不等 3s 宽限
         // Lean Symbol.Create 会把 ticker 大写化（AG2610）——brokerage 经订阅合约列表解析回 CTP 原始大小写
         CtpLeanGateway.Instruments = new[] { "ag2610" };
         _brokerage = new CtpBrokerage(null, _session);
@@ -32,6 +34,7 @@ public class CtpBrokerageTradingTests : IDisposable
     public void Dispose()
     {
         CtpLeanGateway.TradingOptions = _savedOptions;   // 静态选项恢复，防测试间泄漏
+        CtpBrokerage.ReconcileGrace = _savedGrace;
         CtpLeanGateway.Instruments = Array.Empty<string>();
         CtpLeanGateway.LogSink = null;
     }
@@ -314,6 +317,74 @@ public class CtpBrokerageTradingTests : IDisposable
 
     // ═══ FakeCtpSession（记录调用 + 可配置异常 + 可触发回报事件）═══
 
+    // —— 对账（open-issues #25）：交易所重启把在挂委托作废后，bot 必须能自愈 ——
+
+    [Fact]
+    public void Reconcile_cancels_legs_the_exchange_no_longer_has()
+    {
+        // 2026-10-30 事故：交易所重启 → 在挂委托全作废，直连 MM 的档位图仍显示「在挂 多12/空13」，
+        // 73 分钟零报单。对账 = 拿交易所实际委托表比对，查不到就补发 Canceled 让策略重报。
+        CtpLeanGateway.TradingOptions = new CtpLiveTradingOptions { EnableRealOrders = true, MaxOrderVolume = 10 };
+        var order = NewOrder(2m);
+        Assert.True(_brokerage.PlaceOrder(order));
+        _session.RaiseOrder(OrderReport(_session.NextOrderRef, (byte)'3'));   // 已挂上
+        _events.Clear();
+
+        _session.ExchangeOrders = Array.Empty<CtpOrder>();                    // 交易所重启：单没了
+        _brokerage.ReconcileWithExchange();
+
+        var e = Assert.Single(_events);
+        Assert.Equal(OrderStatus.Canceled, e.Status);
+        Assert.Contains(_logs, l => l.Contains("交易所已无此委托"));
+    }
+
+    [Fact]
+    public void Reconcile_leaves_orders_the_exchange_still_has()
+    {
+        CtpLeanGateway.TradingOptions = new CtpLiveTradingOptions { EnableRealOrders = true, MaxOrderVolume = 10 };
+        Assert.True(_brokerage.PlaceOrder(NewOrder(2m)));
+        var orderRef = _session.NextOrderRef;
+        _session.RaiseOrder(OrderReport(orderRef, (byte)'3'));
+        _events.Clear();
+
+        _session.ExchangeOrders = new[] { OrderReport(orderRef, (byte)'3') };  // 还在挂
+        _brokerage.ReconcileWithExchange();
+
+        Assert.Empty(_events);
+    }
+
+    [Fact]
+    public void Reconcile_does_not_cancel_when_the_query_fails()
+    {
+        // 查询失败 ≠ 交易所没单。据此撤腿会让策略以为仓位空了 → 重复挂单（真单还在簿上）。
+        CtpLeanGateway.TradingOptions = new CtpLiveTradingOptions { EnableRealOrders = true, MaxOrderVolume = 10 };
+        Assert.True(_brokerage.PlaceOrder(NewOrder(2m)));
+        _session.RaiseOrder(OrderReport(_session.NextOrderRef, (byte)'3'));
+        _events.Clear();
+
+        _session.QueryOrderException = new TimeoutException("查报单 8s 未返回");
+        _brokerage.ReconcileWithExchange();
+
+        Assert.Empty(_events);
+        Assert.Contains(_logs, l => l.Contains("对账跳过"));
+    }
+
+    [Fact]
+    public void Reconcile_fills_in_a_lost_terminal_report()
+    {
+        // 终态回报丢了：交易所侧已是 '5'（撤单），我们这边还以为在挂 ⇒ 用查询结果补终态。
+        CtpLeanGateway.TradingOptions = new CtpLiveTradingOptions { EnableRealOrders = true, MaxOrderVolume = 10 };
+        Assert.True(_brokerage.PlaceOrder(NewOrder(2m)));
+        var orderRef = _session.NextOrderRef;
+        _session.RaiseOrder(OrderReport(orderRef, (byte)'3'));
+        _events.Clear();
+
+        _session.ExchangeOrders = new[] { OrderReport(orderRef, (byte)'5') };
+        _brokerage.ReconcileWithExchange();
+
+        Assert.Equal(OrderStatus.Canceled, Assert.Single(_events).Status);
+    }
+
     public sealed class FakeCtpSession : ICtpSession
     {
         public const double BidPrice = 7000, AskPrice = 7002;
@@ -359,8 +430,14 @@ public class CtpBrokerageTradingTests : IDisposable
         public Task<IReadOnlyList<CtpPosition>> QueryPositionAsync(string? instrumentId = null, CancellationToken ct = default)
             => Task.FromResult(instrumentId == null ? Positions : Positions.Where(p => p.InstrumentId == instrumentId).ToList());
 
+        /// <summary>交易所侧委托表（对账测试注入；默认空 = 交易所没有任何委托）。</summary>
+        public IReadOnlyList<CtpOrder> ExchangeOrders { get; set; } = Array.Empty<CtpOrder>();
+        public Exception? QueryOrderException { get; set; }
+
         public Task<IReadOnlyList<CtpOrder>> QueryOrderAsync(string? instrumentId = null, CancellationToken ct = default)
-            => Task.FromResult<IReadOnlyList<CtpOrder>>(Array.Empty<CtpOrder>());
+            => QueryOrderException is { } ex
+                ? Task.FromException<IReadOnlyList<CtpOrder>>(ex)
+                : Task.FromResult(ExchangeOrders);
         public Task<IReadOnlyList<CtpInstrument>> QueryInstrumentsAsync(CancellationToken ct = default)
             => Task.FromResult<IReadOnlyList<CtpInstrument>>(Array.Empty<CtpInstrument>());
 

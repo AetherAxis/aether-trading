@@ -68,6 +68,7 @@ public partial class CtpBrokerage : Brokerage, IDataQueueHandler
         WireSessionEvents();
         // 持仓缓存不在此预热——BrokerageSetupHandler 启动时必调 GetAccountHoldings（先于任何 PlaceOrder），
         // 其中 QueryPositionAsync + Replace 即完成预热；PlaceOrder 侧另有 stale>2s 节流兜底。
+        StartReconciler();   // open-issues #25：周期跟交易所对账（委托被作废要能自愈，见 CtpBrokerage.Trading.cs）
         CtpLeanGateway.Log("[Brokerage] CTP 会话已连接，实盘引擎就绪");
         // 数据管线版本标记（排障用）：确认日志里有这行 = 跑的是修复后的二进制（三层自举死锁修复都在内）。
         // 看不到这行 = 旧 .app/dll（dotnet build 不更新已打包的 .app——复制旧包跑的是旧代码）。
@@ -77,6 +78,7 @@ public partial class CtpBrokerage : Brokerage, IDataQueueHandler
     public override void Disconnect()
     {
         StopWatchdog();
+        StopReconciler();
         UnwireSessionEvents();
         // 不调 _session.Logout()——CTP 连接留给 CtpView 继续用
     }
@@ -104,6 +106,7 @@ public partial class CtpBrokerage : Brokerage, IDataQueueHandler
 
     private void OnConnectionStateChanged(object? sender, CtpConnectionStatus e)
     {
+        var previous = _status;
         _status = e;
         var msg = e switch
         {
@@ -114,6 +117,16 @@ public partial class CtpBrokerage : Brokerage, IDataQueueHandler
         };
         OnMessage(new BrokerageMessageEvent(msg, e.ToString(), $"CTP 连接状态: {e}"));
         CtpLeanGateway.Log($"[Brokerage] CTP 连接状态: {e}");
+
+        // 重连成功 ⇒ 立刻对账一次（open-issues #25），不等 20s 定时器：
+        // 断线期间交易所可能已经把在挂委托作废了（柜台重启就是如此），而本地对这些腿仍然「以为在挂」。
+        // 回调在 SDK 线程上，必须甩到后台线程做阻塞查询，否则会卡住回报派发。
+        if (e == CtpConnectionStatus.Connected && previous != CtpConnectionStatus.Connected)
+            Task.Run(() =>
+            {
+                Thread.Sleep(500);   // 让重登后的会话稳定（认证/登录/结算确认刚返回）
+                ReconcileQuietly();
+            });
     }
 
     // —— 交易方法（PlaceOrder/UpdateOrder/CancelOrder/GetOpenOrders/GetAccountHoldings）实现在 CtpBrokerage.Trading.cs ——

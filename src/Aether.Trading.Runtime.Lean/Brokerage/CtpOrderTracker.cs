@@ -195,6 +195,41 @@ public sealed class CtpOrderTracker
         }
     }
 
+    /// <summary>
+    /// 对账用：仍非终态的腿快照（`CtpBrokerage` 定期拿它跟交易所实际委托比对）。
+    /// 只返回已过 <paramref name="minAge"/> 的腿——刚报出去的单可能还没进交易所的查询结果。
+    /// </summary>
+    public List<(Child Child, Tracked Tracked)> LiveChildren(TimeSpan minAge)
+    {
+        lock (_lock)
+        {
+            var now = DateTime.UtcNow;
+            return _byOrderRef.Values
+                .Where(c => !c.Terminal && now - c.CreatedUtc > minAge)
+                .Select(c => (c, _byLeanId[c.LeanOrderId]))
+                .ToList();
+        }
+    }
+
+    /// <summary>
+    /// 对账判定：交易所已经查不到这条委托（重启作废 / 从未落地）⇒ 原子转成撤单终态，让策略重报。
+    /// 返回 false = 已被回报或 watchdog 抢先判过，调用方不得重复发事件。<para/>
+    /// 与 <see cref="TryMarkWatchdogInvalid"/> 的区别：那个判 Invalid（从没收到过任何回报），
+    /// 这个判 Canceled（已经挂着、交易所侧却没了）；两者都置 <c>FirstReportSeen</c> 以互斥。
+    /// </summary>
+    public bool TryMarkReconciledCanceled(string orderRef)
+    {
+        lock (_lock)
+        {
+            if (!_byOrderRef.TryGetValue(orderRef, out var child)) return false;
+            if (child.Terminal) return false;
+            child.FirstReportSeen = true;
+            child.Terminal = true;
+            child.LastStatus = OrderStatus.Canceled;
+            return true;
+        }
+    }
+
     /// <summary>watchdog 用：下单后迟迟未收到首次回报的幽灵腿（前置静默拒单不可见——ICtpSession 不上浮 OnRspOrderInsert）。</summary>
     public List<(Child Child, Tracked Tracked)> StaleChildren(TimeSpan maxAge)
     {

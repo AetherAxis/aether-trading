@@ -8,6 +8,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- 对账（open-issues #25）等「定时器背后的逻辑」要能被单测直接驱动，不靠等 20s 定时器 -->
+    <InternalsVisibleTo Include="Aether.Trading.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- 本上下文 -->
     <ProjectReference Include="..\Aether.Trading.Runtime.Domain\Aether.Trading.Runtime.Domain.csproj" />
     <ProjectReference Include="..\Aether.Trading.Domain\Aether.Trading.Domain.csproj" />
